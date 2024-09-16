@@ -31,7 +31,7 @@ The data shows the event based changes of every single price change for the fuel
 
 For additional dataset description please visit https://dev.azure.com/tankerkoenig/_git/tankerkoenig-data
 
-This raw data is aggregated on a daily median basis in codeblock 7 *dataset-creation*.
+This raw data is aggregated on a daily median basis in codeblock 7 *dataset-creation* and saved as a csv. The csv is also provided in this repo as *daily_focused_prices.csv*.
 
 
 ## Requirements
