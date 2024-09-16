@@ -31,6 +31,9 @@ The data shows the event based changes of every single price change for the fuel
 
 For additional dataset description please visit https://dev.azure.com/tankerkoenig/_git/tankerkoenig-data
 
+This raw data is aggregated on a daily median basis in codeblock 7 *dataset-creation*.
+
+
 ## Requirements
 
 The tankerkoenig.Rmd requires the University-specific fhswf package to be knitted. A guide for downloading the required packages is provided here: https://bchwtz.github.io/bchwtz-stat/fhswf-package.html
