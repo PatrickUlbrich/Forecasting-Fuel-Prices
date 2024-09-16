@@ -1,0 +1,640 @@
+---
+title: "Analysis of ARAL’s daily median prices in Germany"
+
+course: Predictive Analytics / Forecasting
+supervisor: Prof. Dr. Buchwitz
+city: Meschede
+
+# List of Authors
+author:
+- familyname: Ulbrich
+  othernames: Patrick Adrian
+  address: "MatNr: 30360707"
+  email: ulbrich.patrick@fh-swf.de
+  correspondingauthor: false
+
+# Language Options
+german: false # German Dummy Text
+lang: en-gb   # Text Language: en-gb, en-us, de-de
+
+# Indexes
+toc: true     # Table of Contents
+lot: false    # List of Tables
+lof: false    # List of Figures
+
+# Output Options
+bibliography: references.bib
+biblio-style: authoryear-comp
+blind: false
+cover: true
+checklist: false
+output:
+  fhswf::seminarpaper:
+    fig_caption: yes
+    fig_height: 5
+    fig_width: 8
+    keep_tex: no
+    number_sections: yes
+    citation_package: biblatex
+# aus erstem Semester übernommen zur Fixierung der Bilder.
+header-includes:
+ \usepackage{float}
+ \floatplacement{figure}{H} # H = fixed position of figures
+knit: fhswf::render_seminarpaper
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, cache = FALSE, messages = FALSE, warning = FALSE,
+  attr.source = ".numberLines", singlespacing = TRUE
+)
+fhswf::fhswf_hooks()
+
+# Load Packages
+library(fhswf)
+library(fpp3)
+```
+
+
+# Introduction
+
+Most people own a car, so predicting gas prices to find the optimal time for buying gas is a topic that most people are interested in. The dataset by Tankerkönig is an ideal basis for forecasting gas prices as it provides exact, event based data going back to June of 2014. Additionally, besides home owning, a car and the expenses in relation to owning a car are the second biggest expense of an average household. Most people are interested in the exact price and are less interested in the theoretical uncertainty in prices. Therefore this analysis focuses on point forecasts and metrics that focus on the accuracy of the point forecast.
+
+The aim of this work is to determine what the optimal forecasting method for gas prices is and how accurate this measure is. A natural assumption is that gas prices are highly correlated to crude oil prices. As crude oil is a publicly traded commodity, just as gas at gas stations is, the *Efficient Market Hypothesis* is a fitting hypothesis for gas prices. That would mean that all usable information is incorporated in the current price and a Naive Forecast outperforms most other forecasting methods and models.
+
+Asking a small, non representative group of people how they decide on their gas buying behaviour, some people try to follow rules like "Weekends are always more expensive", "Monday is the cheapest day", or "Thursday is the cheapest day". Sometimes these day-based rules contradict each other, which can be interpreted as also being in line with the Efficient Market Hypothesis and a confirmation bias. As most people try to predict the best time to buy gas in some way, even a confirmation of an efficient market behaviour for day to day prices is an interesting result.
+
+In this work the event based data by Tankerkönig is converted to a daily median gas price time series. Then an Exploratory Data Analysis (EDA) is performed to understand the dataset. Following the EDA basic forecasting methods (Mean, Naive and Drift) as well as more complex forecasting models (ETS and ARIMA) are created. Multiple evaluation metrics are calculated for each forecast. The AICc is used for training set accuracy and model selection and MAE, RMSE, MAPE, MASE and RMSSE are used for test set accuracy. 
+
+\newpage
+
+# Dataset Creation
+
+The data is provided by @tankerkoenig-data. The data is separated in stations and event-based prices. For forecasting a time series is needed, therefore the event based data has to be aggregated on a specified granularity. A daily granularity is used here. First the stations that are the focus of the analysis have to be specified. 
+
+```{r}
+library(dplyr)
+library(readr)
+stations <- read_csv(
+  Sys.getenv("STATIONS_ROOT_DIR")
+)
+
+betreiber <- stations %>%
+  count(brand, name = "count") %>%
+  arrange(desc(count))
+```
+
+```{r gas-stations-count, echo=FALSE}
+knitr::kable(
+  head(betreiber),
+  booktabs = T,
+  linesep = "",
+  caption = "Station Brands sorted by Count of Stations."
+) %>%
+  kableExtra::kable_styling(latex_options = "H")
+```
+
+ARAL is the focus of this analysis as it is the most common brand of gas stations in Germany, as shown in table \ref{tab:gas-stations-count}.
+
+```{r}
+selected_brand <- "ARAL" # ARAL is the most common gas station
+focused_stations <- stations %>% filter(brand %in% selected_brand)
+```
+
+Next the prices have to be inspected to define an appropriate aggregation scheme. For this a single file is inspected.
+
+```{r price-event-examples}
+root_dir <- Sys.getenv("PRICES_ROOT_DIR")
+file_list <- list.files(
+  path = root_dir, pattern = "*.csv", full.names = TRUE, recursive = TRUE
+)
+# read example file
+# shorten station_uuid for better visualization
+example_file <- read.csv(file_list[1]) %>%
+  rename("station_uuid_short" = "station_uuid")
+example_file$station_uuid_short <-
+  substr(example_file$station_uuid_short, 1, 10)
+example_file$date <-
+  substr(example_file$date, 1, 10)
+
+knitr::kable(
+  head(example_file),
+  booktabs = T,
+  linesep = "",
+  caption = "Example Rows of the Price Event Data."
+) %>%
+  kableExtra::kable_styling(latex_options = "H")
+```
+
+Table \ref{tab:price-event-examples} shows the first 5 rows of the first price event file as an example. The description of the fields below is taken from @tankerkoenig-data.
+
+|Field       |meaning                                  |
+|------------|-----------------------------------------|
+|date        |Timestamp of Change                      |
+|station_uuid|UUID of the Gas Stations from `stations` |
+|diesel      |Price Diesel                             |
+|e5          |Price Super E5                           |
+|e10         |Price Super E10                          |
+|dieselchange|0=No Change, 1=Change, 2=Removed, 3=New  |
+|e5change    |0=No Change, 1=Change, 2=Removed, 3=New  |
+|e10change   |0=No Change, 1=Change, 2=Removed, 3=New  |
+
+```{r}
+max(example_file$e10)
+min(example_file$e10)
+```
+
+For forecasting the data is aggregated on a daily basis. As the simple check for outliers via the max() and min() function above shows unrealistic outliers for the e10 price, probably "out of stock" default values, the median instead of the mean or mode is used to aggregate the prices. It is a reasonable assumption that most gas stations do some price changes within a day, so the median on the price events per day should result in a realistic level of the gas prices. This process makes the final price values equidistant. 
+
+The function below is used for the aggregation. The process filters the stations on the previously specified focused_stations list, so stations of *`r unique(focused_stations$brand)`* in this case and loops over all files in the file_list. The dataset is also saved.
+
+```{r dataset-creation}
+library(data.table)
+
+process_raw_data <- function(
+    calculate = 0,
+    file_list,
+    focused_stations,
+    file_path = Sys.getenv("DAILY_DATA_FILE_PATH")) {
+  # This function calculates the daily median prices for the specified
+  # stations and saves the result in the file_path directory. The file
+  # saved in the file_path can be read by setting calculate to 0 (default).
+  # The arguments of file_list and focused_stations are only necessary
+  # for calculating the daily data.
+
+  if (calculate == 1) {
+    daily_focused_prices <- tibble()
+
+    total_time <- system.time({
+      for (file in file_list) {
+        # read the individual CSV files
+        # separately tested: fread() is faster than read_csv() which is
+        # important for the amount of data processed.
+        daily_data <- fread(
+          file,
+          colClasses = list(character = "date")
+        ) %>% # prevent unwanted implicit timezone conversions
+          as_tibble()
+
+        filtered_data <- daily_data %>%
+          filter(station_uuid %in% focused_stations$uuid) %>%
+          select(date, station_uuid, diesel, e5, e10) %>%
+          # extract only the date portion without timestamp and timezone
+          mutate(date = as.Date(substr(date, 1, 10)))
+
+        daily_aggregation <- filtered_data %>%
+          group_by(date) %>%
+          summarize(
+            # median used to remove outliers and out of stock prices
+            median_e10_price = median(e10, na.rm = TRUE),
+            median_e5_price = median(e5, na.rm = TRUE),
+            median_diesel_price = median(diesel, na.rm = TRUE),
+            .groups = "drop"
+          )
+
+        # combine the days data into the main data.table
+        daily_focused_prices <- rbind(
+          daily_focused_prices,
+          daily_aggregation
+        )
+
+        message(file, " read") # tracking progress
+      }
+    })
+
+    # output data to a csv
+    daily_focused_ts <- daily_focused_prices %>%
+      as_tsibble(index = date)
+    write_csv(daily_focused_prices, file_path)
+
+    # output time measurement for processing loop in readable format
+    elapsed_time <- total_time["elapsed"]
+    hours <- floor(elapsed_time / 3600)
+    minutes <- floor(
+      (elapsed_time %% 3600) / 60
+    )
+    seconds <- round(elapsed_time %% 60)
+    formatted_time <- sprintf("%02d:%02d:%02d", hours, minutes, seconds)
+    print(paste("Total time taken:", formatted_time))
+  } else {
+    # read file from previously calculated csv
+    daily_focused_prices <- read_csv(file_path)
+    daily_focused_ts <- daily_focused_prices %>%
+      as_tsibble(index = date)
+  }
+
+  return(daily_focused_ts)
+}
+```
+
+The function above is used for creating the time series below.
+
+```{r}
+daily_focused_ts <- process_raw_data(
+  calculate = 0,
+  file_path = Sys.getenv("DAILY_DATA_FILE_PATH")
+)
+```
+
+\newpage
+
+# Dataset Description and Exploratory Data Analysis
+
+## Dataset Description 
+
+The created time series contains the daily median prices for the fuel types e5, e10 and diesel. Figure \ref{fig:ts-basic} shows the daily median price for all three fuel types. From 2014 to 2021 the three fuel types were in the price range of 1.00 Euro to 1.60 Euros. After that period prices surged to a high of above 2.30 Euros with the special case that diesel, for a short time, was more expensive than the other two fuel types. After that, from about the beginning of 2023 up until now, prices seem to have settled on a new plateau between 1.60 Euros on the lower end and 1.90 on the upper end. In total there are `r nrow(daily_focused_ts)` observations. The time series does not exhibit clearly visible yearly seasonal patterns. The prices of the three fuel types are highly correlated. As the fuel types are highly correlated, all following analysis are based solely on the e10 price for easier understanding and easier visualization. 
+
+```{r ts-basic, fig.cap="Daily Median Fuel Prices."}
+# convert the tsibble from wide to long format for autoplot
+daily_long_ts <- daily_focused_ts %>%
+  pivot_longer(
+    cols = c(median_diesel_price, median_e5_price, median_e10_price),
+    names_to = "fuel_type",
+    # regex extracts everything between "median_" and "_price" as fuel_type
+    names_pattern = "median_(.*)_price",
+    values_to = "median_price"
+  )
+
+# visualize all three median prices in a single plot
+autoplot(daily_long_ts, median_price) +
+  labs(x = "Date", y = "Median Price", color = "Fuel Type") +
+  theme_minimal() +
+  theme(
+    legend.position = "top",
+    legend.title = element_blank()
+  ) +
+  # set specific color scheme
+  scale_color_manual(
+    values = c("diesel" = "blue", "e10" = "orange", "e5" = "green")
+  )
+```
+
+## Visual Comparison of the Days of the Week
+
+As mentioned in the introduction, there are multiple theories that say that some weekdays are generally cheaper or more expensive than others. This can be checked on the basis of the median prices. Figure \ref{fig:violin-days} shows the Violin Plot for the median prices of e10.
+
+```{r violin-days, fig.cap="Density and Distribution of Median E10 Prices by Day of the Week."}
+daily_focused_ts <- daily_focused_ts %>%
+  mutate(day_of_week = lubridate::wday(date, label = TRUE, abbr = FALSE))
+
+ggplot(daily_focused_ts, aes(x = day_of_week, y = median_e10_price)) +
+  geom_violin(trim = FALSE) +
+  labs(
+    x = "Day of the Week",
+    y = "Median E10 Price"
+  ) +
+  theme_minimal()
+```
+
+A violin plot is comparable to a box plot, but it additionally includes visually easier to interpret information from a density plot. The width of each plot shows the frequency of the respective price. Visually the graphs for each day of the week look almost identical, which indicates that there are no meaningful differences between the prices on different week days.
+
+## ANOVA
+
+The visual result is confirmed by a statistical test. The ANOVA (Analysis of Variance) is used to compare different groups, in this case the day of the week, to determine if there are significant differences. The null hypothesis of ANOVA is that there are no differences between the groups. A small p-value of under 0.05 would indicate that at least one of the days is significantly different from the other days (see @anova or alternatively for a quick overview @anova_qualtrics). The aov() function in combination with the summary() function can be used to calculate the ANOVA for the days of the week in relation to the median e10 price. 
+
+```{r anova}
+summary(aov(median_e10_price ~ day_of_week, data = daily_focused_ts))
+```
+
+Df is the degrees of freedom, 6 in this case as there are 7 days in a week. Sum Sq is the Sum of Squares, a measure of the between-group variation. Mean Square (Mean Sq) is the Sum of Squares divided by the degrees of freedom. The F-value is the Mean Square of the days of the week divided by the Mean Square of the residuals. This value is very low with a value of 0.037. The final p-value is an indication if the null hypothesis can be rejected. The p-value shows a value of 1 (100%). There is no statistical significant difference of the e10 price between the days of the week.
+
+## Seasonality
+
+For focusing on the seasonal component it is necessary to make the data stationary by differencing it. This effectively removes the trend component from the upcoming plots. The unitroot_ndiffs() and unitroot_nsdiffs() functions can be used to calculate how often the dataset should be differenced or seasonally differenced (see @forecasting[Chapter 9.1] for an explanation of the functions). Based on the result below, the dataset has to be differenced one time.
+
+```{r}
+daily_focused_ts %>% features(median_e10_price, unitroot_ndiffs)
+daily_focused_ts %>% features(median_e10_price, unitroot_nsdiffs)
+```
+
+The result can be double checked. As can be seen below, the functions now return that no additional differencing is necessary.
+
+```{r}
+diff_series <- daily_focused_ts %>% mutate(
+  diff_median_e10 = difference(median_e10_price)
+)
+
+diff_series %>% features(diff_median_e10, unitroot_ndiffs)
+diff_series %>% features(diff_median_e10, unitroot_nsdiffs)
+```
+
+The ACF (Autocorrelation Function) and PACF (Partial Autocorrelation Function) plots are used for visually inspecting seasonality. Even though there is no significant difference between the mean of the days as shown in figure \ref{fig:violin-days} and the
+[ANOVA test](#anova), the ACF on the bottom left in figure \ref{fig:ACF-PACF} shows significant autocorrelation at the weekly seasonal lags of 7, 14, 21, 28 and 35 days. The PACF also shows the same result of significant weekly seasonal lags at 7, 14, 21, 28 and 35 days. This indicates that there is significant weekly seasonality in the data. 
+
+```{r ACF-PACF, fig.cap="Time Series, ACF, and PACF of the Median E10 Price."}
+gg_tsdisplay(diff_series, diff_median_e10, plot_type = "partial")
+```
+
+\newpage
+
+# Forecasting
+
+For calculating the forecast accuracy the available data has to be split in a training set and a test set. A typical rule of thumb is to use 80% of the data for training and 20% for testing. As this dataset contains `r nrow(daily_focused_ts)` observations, more of the data can be used for testing than in this rule of thumb. For this analysis 95% of the data is used for training. That still leaves `r floor(nrow(daily_focused_ts) * 0.05) + 1` data points for testing. 
+
+```{r, echo=TRUE}
+split_point <- floor(nrow(daily_focused_ts) * 0.95)
+
+training_set <- daily_focused_ts %>% slice(1:split_point)
+test_set <- daily_focused_ts %>% slice((split_point + 1):n())
+```
+
+The code block below calculates all models. These models are:
+
+- Mean Method
+- Naive Method
+- Drift Method
+- ETS Model
+- ARIMA Model
+
+```{r model-calculation}
+# calculate all models
+e10_forecast_models <- training_set %>%
+  model(
+    mean = MEAN(median_e10_price),
+    naive = NAIVE(median_e10_price),
+    drift = RW(median_e10_price ~ drift()),
+    ets = ETS(median_e10_price),
+    arima = ARIMA(
+      median_e10_price,
+      stepwise = FALSE,
+      approximation = FALSE,
+      greedy = FALSE
+    )
+  )
+
+# calculate forecasts
+forecast_horizon <- nrow(test_set)
+e10_forecasts <- e10_forecast_models %>% forecast(h = forecast_horizon)
+```
+
+## Forecasting Method and Models
+
+In this section the forecasting methods and forecasting models are described. The simple forecasting methods of Mean, Naive and Drift are referred to as *methods* instead of *models* as they do not contain statistical information. The forecasting methods are an algorithmic, recurring approach to forecasting. They don't inherently contain the forecast uncertainty. In comparison a statistical *model* is a stochastic process that produces the point forecast as the mean of a distribution as well as an entire forecast distribution [@forecasting, Chapter 8.5]. There are also statistical models that generate the same point forecasts as exponential smoothing methods. These are referred to as state space models [@forecasting, Chapter 8.5].
+
+### Mean Method
+
+The forecast via the Mean Method is the mean of the historical data, in this case the training set. Equation \ref{eq:mean} is taken from @forecasting[Chapter 5.2].
+
+\begin{equation}
+\label{eq:mean}
+\hat{y}_{T+h|T} = \bar{y} = (y_{1}+\dots+y_{T})/T
+\end{equation}
+
+### Naive Method
+
+There is no parameter in the Naive Method. The naive forecast is the value of the last observation. Equation \ref{eq:naive} is taken from @forecasting[Chapter 5.2].
+
+\begin{equation}
+\label{eq:naive}
+\hat{y}_{T+h|T} = y_{T}
+\end{equation}
+
+### Drift Method
+
+The Drift Method is a variation of the Naive Method. The last observed value is taken and the average change from the first and last value of the historical data, here the training set, is added to the last observed value. Equation \ref{eq:drift} is taken from @forecasting[Chapter 5.2].
+
+\begin{equation}
+\label{eq:drift}
+\hat{y}_{T+h|T} = y_{T} + \frac{h}{T-1}\sum_{t=2}^T (y_{t}-y_{t-1}) = y_{T} + h \left( \frac{y_{T} -y_{1}}{T-1}\right)
+\end{equation}
+
+### ETS Model (Exponential Smoothing)
+
+ETS Models are time series forecasting models. The ETS model stands for Error, Trend, and Seasonality. ETS models can accommodate additive, additive damped or multiplicative error, trend, and seasonal components, allowing for a flexible and robust approach to forecasting. The taxonomy of exponential smoothing methods is shown in @forecasting[Chapter 8.4] and is not be repeated here.
+
+### ARIMA Model (Autoregressive Integrated Moving Average)
+
+ARIMA Models are time series forecasting models. The ARIMA model stands for Autoregression (AR), Integration (I) and Moving Average (MA). The autoregressive part forecasts the next value by using past values of the variable [@forecasting, Chapter 9.3]. The moving average part forecasts the next value by using past forecasting errors [@forecasting, Chapter 9.4]. The general formula in backshift notation (see @forecasting[Chapter 9.2]) was taken from @forecasting[Chapter 9.5] and is shown in equation \ref{eq:arima-backshift}. ARIMA models can be extended to incorporate seasonal information as shown in @forecasting[Chapter 9.9].
+
+\begin{equation}
+\label{eq:arima-backshift}
+  \begin{array}{c c c c}
+    (1-\phi_1B - \cdots - \phi_p B^p) & (1-B)^d y_{t} &= &c + (1 + \theta_1 B + \cdots + \theta_q B^q)\epsilon_t\\
+    {\uparrow} & {\uparrow} & &{\uparrow}\\
+    \text{AR($p$)} & \text{$d$ differences} & & \text{MA($q$)}\\
+  \end{array}
+\end{equation}
+
+## Forecasting Results
+
+```{r forecasting-models, echo=FALSE}
+knitr::kable(
+  e10_forecast_models,
+  booktabs = T,
+  linesep = "",
+  caption = "Created Forecasting Models."
+) %>%
+  kableExtra::kable_styling(latex_options = "H")
+```
+
+Table \ref{tab:forecasting-models} shows the created forecasting models. The ETS() as well as the ARIMA() functions recognized the weekly seasonality automatically and incorporated it in their respective models. Figure \ref{fig:ts-basic-forecasts} shows all forecasts. This includes the three basics models of Mean, Naive and Drift as well as the more sophisticated models of ETS and ARIMA. As multiple forecasts are plotted Only the point forecasts are visualized. Based on the visualization the Mean Forecast is not a good forecast. All other forecasts are very similar and visually almost not distinguishable. The test set is shown in grey.
+
+```{r ts-basic-forecasts, fig.cap="Forecasts of Median E10 Prices Using All described Forecasting Methods."}
+e10_forecasts %>%
+  autoplot(
+    training_set,
+    level = NULL # level = NULL to disable prediction intervals
+  ) +
+  autolayer(test_set, .vars = median_e10_price, color = "grey") +
+  labs(y = "Median E10 Price") +
+  guides(colour = guide_legend(title = "Forecast")) +
+  theme_minimal() +
+  theme(
+    legend.position = "top",
+    legend.title = element_blank()
+  )
+```
+
+## Metrics
+
+To compare the methods in more detail specific metrics can be used. Some of the metrics are scale dependent, while others are scale independent. Scale dependent metrics cannot be used for comparison of forecasts using different units. All forecasts in this analysis are on the same time series. The metrics used here are:
+
+- MAE
+- RMSE
+- MAPE
+- MASE
+- RMSSE
+- AIC and AICc
+
+### MAE (Mean Absolute Error) and RMSE (Root Mean Squared Error)
+
+The MAE (Mean Absolute Error) and the RMSE (Root Mean Squared Error) are scale dependent metrics. Minimizing the MAE leads to a median optimal forecast, while minimizing the RMSE leads to mean optimal forecasts. Equation \ref{eq:mae-rmse} is taken from @forecasting[Chapter 5.8].
+
+\begin{align}
+\label{eq:mae-rmse}
+\text{Mean absolute error: MAE} & = \text{mean}(|e_{t}|) \notag \\
+\text{Root mean squared error: RMSE} & = \sqrt{\text{mean}(e_{t}^2)}
+\end{align}
+
+### MAPE (Mean Absolute Percentage Error)
+
+The MAPE (Mean Absolute Percentage Error) can be used to compare forecasts between datasets as it is a percentage error and therefore unit-free. Percentage Errors in general can only be used if there is a meaningful zero, which is the case in gas prices. Equation \ref{eq:mape} is taken from @forecasting[Chapter 5.8].
+
+\begin{equation}
+\label{eq:mape}
+\text{Mean absolute percentage error: MAPE} = \text{mean}(|p_{t}|)
+\end{equation}
+
+### MASE (Mean Absolute Scaled Error) and RMSSE (Root Mean Squared Scaled Error)
+
+The MASE (Mean Absolute Scaled Error) is a scaled measure and an alternative to the percentage error approach. It uses the training MAE for scaling. For a seasonal time series, the scaled error using a seasonal naive forecast is shown in equation \ref{eq:scaled-error} as taken from @forecasting[Chapter 5.8]. 
+
+\begin{equation}
+\label{eq:scaled-error}
+q_{j} = \frac{\displaystyle e_{j}}
+    {\displaystyle\frac{1}{T-m}\sum_{t=m+1}^T |y_{t}-y_{t-m}|}
+\end{equation}
+
+This scaled error is used similarly to the MAE and RMSE as shown in equation \ref{eq:mase-rmsse} as taken from @forecasting[Chapter 5.8].
+
+\begin{align}
+\label{eq:mase-rmsse}
+\text{MASE} & = \text{mean}(|q_{j}|) \notag \\
+\text{RMSSE} & = \sqrt{\text{mean}(q_{j}^2)}
+\end{align}
+
+### AIC and AICc
+
+The ETS() and ARIMA() functions used for finding the optimal model use the *AICc* metric for determining the best model. AICc measures the accuracy of a model and penalizes the amount of parameters used. It's important to note that AICc is only used on the training set for selecting the model. It contains no information about fit on the test set. The formulas in equation \ref{eq:aic} and equation \ref{eq:aicc} are taken from @forecasting[Chapter 7.5].
+
+\begin{equation}
+\label{eq:aic}
+\text{AIC} = T\log\left(\frac{\text{SSE}}{T}\right) + 2(k+2)
+\end{equation}
+
+\begin{equation}
+\label{eq:aicc}
+\text{AIC}_{\text{c}} = \text{AIC} + \frac{2(k+2)(k+3)}{T-k-3}
+\end{equation}
+
+## Model Comparison
+
+The AICc is used for comparing models. The AICc can be accessed using the glance() function with the ETS and ARIMA models. However, as shown in table \ref{tab:aic-glance-result}, the simpler methods of Mean, Naive and Drift don't contain an AICc, so their AICc has to be specifically calculated. 
+
+```{r aic-glance-result}
+knitr::kable(
+  e10_forecast_models %>% glance() %>% select(.model, AIC, AICc),
+  booktabs = T,
+  linesep = "",
+  caption = "Result of the glance() Function on the Created Models."
+) %>%
+  kableExtra::kable_styling(latex_options = "H")
+```
+
+
+### Calculation of AICc for simpler Models
+
+The defined function below calculates the AIC and AICc for the simpler methods. 
+
+```{r}
+calculate_aic_aicc <- function(residuals, num_params, T) {
+  sse <-
+    sum(residuals^2, na.rm = TRUE) # sum of squared errors (SSE)
+  aic <-
+    T * log(sse / T) + 2 * (num_params + 2)
+  aicc <-
+    aic + (2 * (num_params + 2) * ((num_params + 3))) / (T - num_params - 3)
+  return(list(AIC = aic, AICc = aicc))
+}
+```
+
+This function is sued to calculate the AIC and AICc for the Mean, Naive and Drift method below.
+
+```{r}
+# calculate residuals for mean model
+mean_residuals <- e10_forecast_models %>%
+  select(mean) %>%
+  augment() %>%
+  pull(.resid)
+
+# calculate residuals for naive model
+naive_residuals <- e10_forecast_models %>%
+  select(naive) %>%
+  augment() %>%
+  pull(.resid)
+
+# calculate residuals for drift model
+drift_residuals <- e10_forecast_models %>%
+  select(drift) %>%
+  augment() %>%
+  pull(.resid)
+
+T <- nrow(training_set) # number of observations
+
+# calculate AIC and AICc
+# naive has no parameter as it is just the last observation
+naive_aic_aicc <- calculate_aic_aicc(naive_residuals, num_params = 0, T)
+
+# mean has 1 parameter: the mean, which is the forecast
+mean_aic_aicc <- calculate_aic_aicc(mean_residuals, num_params = 1, T)
+
+# drift has 2 parameters: 1 the intercept, 2 the slope of the drift
+drift_aic_aicc <- calculate_aic_aicc(drift_residuals, num_params = 2, T)
+```
+
+### Comparison of all Models
+
+The code block below combines the AIC and AICc values for the ETS() and ARIMA() models with the manually calculated values for the simpler models of Mean, Naive and Drift. The results are shown in table \ref{tab:aic-result-combined}.
+
+```{r}
+# take AICc for ETS and ARIMA models from glance() function
+model_metrics <- e10_forecast_models %>%
+  select(-mean, -naive, -drift) %>%
+  glance() %>%
+  select(.model, AIC, AICc)
+
+# create a tibble for calculated AIC and AICc values for simple models
+simple_models_metrics <- tibble(
+  .model = c("mean", "naive", "drift"),
+  AIC = c(mean_aic_aicc$AIC, naive_aic_aicc$AIC, drift_aic_aicc$AIC),
+  AICc = c(mean_aic_aicc$AICc, naive_aic_aicc$AICc, drift_aic_aicc$AICc)
+)
+
+# combine the two results
+combined_metrics <-
+  bind_rows(simple_models_metrics, model_metrics) %>% arrange(AICc)
+```
+
+```{r aic-result-combined, echo=FALSE}
+knitr::kable(
+  combined_metrics,
+  booktabs = T,
+  linesep = "",
+  caption = "AIC and AICc for all Created Models."
+) %>%
+  kableExtra::kable_styling(latex_options = "H")
+```
+
+Table \ref{tab:aic-result-combined} shows that the Naive Forecast has the lowest AICc of all created models. This is in line with the hypothesis from the introduction that gas prices are a publicly traded good and therefore should follow the efficient market hypothesis.
+
+As described in the previous AICc section, the AICc is used for chosing a model, but it contains no information test set accuracy. The test metrics are shown in table \ref{tab:model-test-metrics}. 
+
+```{r model-test-metrics}
+knitr::kable(
+  e10_forecasts %>%
+    accuracy(daily_focused_ts) %>%
+    select(.model, .type, MAE, RMSE, MAPE, MASE, RMSSE) %>%
+    arrange(RMSE),
+  booktabs = T,
+  linesep = "",
+  caption = "Test Metrics for all Created Models."
+) %>%
+  kableExtra::kable_styling(latex_options = "H")
+```
+
+Comparing the values shown in table \ref{tab:model-test-metrics} shows no model that is clearly better than the other models. Besides the Mean Method, that is clearly the worst forecast, all other forecasts are very close together. This is in line with figure \ref{fig:ts-basic-forecasts}. On MAPE the simplest Naive Method even is the best forecast.
+
+\newpage
+
+# Conclusion
+
+The initial efficient market hypothesis for gas prices is confirmed. Gas prices are publicly traded, therefore they follow the efficient market hypothesis and the Naive Forecast is the best fit by terms of training set accuracy as determined by AICc and even in terms of one of the test set metrics. In terms of test set accuracy some of the more sophisticated models have better values in some metrics, but for interpretability and all practical purposes for most end consumers it is best to assume that there is no value in "waiting for day x of the week" to get gas. 
+
+\newpage
+
+# Technical Appendix {-}
+
+```{r, echo = TRUE}
+Sys.time()
+sessionInfo()
+```
