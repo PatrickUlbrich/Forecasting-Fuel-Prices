@@ -36,7 +36,7 @@ This raw data is aggregated on a daily median basis in codeblock 7 *dataset-crea
 
 ## Requirements
 
-The tankerkoenig.Rmd requires the University-specific fhswf package to be knitted. A guide for downloading the required packages is provided here: https://bchwtz.github.io/bchwtz-stat/fhswf-package.html
+The tankerkoenig.Rmd requires R and the University-specific fhswf package to be knitted. A guide for downloading the required packages is provided here: https://bchwtz.github.io/bchwtz-stat/fhswf-package.html
 
 The tankerkoenig.Rmd file also requires the following environment variables to be defined:
 
