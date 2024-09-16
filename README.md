@@ -44,4 +44,4 @@ The tankerkoenig.Rmd file also requires the following environment variables to b
 
 - **PRICES_ROOT_DIR**: The prices folder from the dataset (example: *additional_path/tankerkoenig-data/prices*)
 
-- **DAILY_DATA_FILE_PATH**: Codeblock 7 *dataset-creation* calculates a daily median price time series for all three fuel types from the event data. The time series is saved as a csv file for later use.
+- **DAILY_DATA_FILE_PATH**: Codeblock 7 *dataset-creation* calculates a daily median price time series for all three fuel types from the event data. The time series is saved as a csv file at this file path for later use.
