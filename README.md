@@ -1,4 +1,4 @@
-# forecasting-fuel-prices
+# Forecasting Fuel Prices
 
 The code and the analysis in this repository was used in a study project as part of my Master's Degree in Data Science. My final examination paper can be found in the file *tankerkoenig_analysis.pdf*. 
 
